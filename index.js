@@ -67,3 +67,11 @@ client.on('messageCreate', async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
+import http from 'http';
+
+// Satisfies Render's free Web Service health check
+http.createServer((req, res) => {
+  res.write("Discord bot is active!");
+  res.end();
+}).listen(process.env.PORT || 3000);
