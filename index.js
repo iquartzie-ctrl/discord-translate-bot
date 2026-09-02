@@ -1,13 +1,21 @@
-import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { 
+  Client, 
+  GatewayIntentBits, 
+  ContextMenuCommandBuilder, 
+  SlashCommandBuilder,
+  ApplicationCommandType, 
+  REST, 
+  Routes 
+} from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import http from 'http';
 import 'dotenv/config';
 
-// Render Health Check Server
+// Health Check Server for Render Free Web Service
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.write("Smart Translation Bot Active!");
+  res.write("Discord AI Translator Active!");
   res.end();
 }).listen(PORT, '0.0.0.0');
 
@@ -21,35 +29,47 @@ const client = new Client({
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Smart Translation with Context & Emoji Rules
-async function translateWithContext(targetMessage, recentHistory, targetLang) {
-  const systemInstruction = `
-You are an expert Discord AI Translator.
-Your job is to translate the target message into ${targetLang}.
+// Set to track users who opted out of translation
+const optedOutUsers = new Set();
 
-RULES:
-1. Preserve all custom Discord emojis (<:name:id>), standard emojis, URLs, and @mentions strictly as they are.
-2. Maintain markdown formatting like bold (**), italics (*), or code blocks (\`\`\`).
-3. If the user split their thoughts across multiple consecutive messages (shown in context history), combine them into one seamless, natural translation.
-4. Translate gaming/internet slang naturally to equivalent natural phrasing in ${targetLang}.
-5. Output ONLY the translated text without conversational filler or intros.
-`;
+// Register Commands (Slash Command + Context Menu Apps)
+const commands = [
+  new SlashCommandBuilder()
+    .setName('translator-toggle')
+    .setDescription('Opt in or opt out of having your messages translated by others.'),
+  new ContextMenuCommandBuilder()
+    .setName('Translate to English')
+    .setType(ApplicationCommandType.Message),
+  new ContextMenuCommandBuilder()
+    .setName('Translate to Thai')
+    .setType(ApplicationCommandType.Message),
+  new ContextMenuCommandBuilder()
+    .setName('Translate to Tagalog')
+    .setType(ApplicationCommandType.Message),
+];
 
-  // Format context history for Gemini
-  const prompt = `
-[CHANNEL HISTORY FOR CONTEXT]:
-${recentHistory}
+client.once('clientReady', async () => {
+  console.log(`🤖 Logged in as ${client.user.tag}`);
 
-[TARGET MESSAGE TO TRANSLATE]:
-"${targetMessage}"
-`;
+  try {
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    console.log('✅ Commands & Opt-Out slash command registered successfully!');
+  } catch (error) {
+    console.error('❌ Failed to register commands:', error);
+  }
+});
 
+async function translateMessage(text, targetLang) {
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: prompt,
+      contents: text,
       config: {
-        systemInstruction: systemInstruction,
+        systemInstruction: `Translate the text into ${targetLang}. Preserve all emojis, mentions, and code blocks. Output ONLY the translation.`,
         temperature: 0.2,
       },
     });
@@ -61,81 +81,62 @@ ${recentHistory}
   }
 }
 
-client.once('clientReady', () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-});
-
-// Event 1: Add Translation Buttons
-client.on('messageCreate', async (message) => {
-  if (message.author.bot || !message.content) return;
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('trans_english')
-      .setLabel('English')
-      .setEmoji('🇬🇧')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('trans_thai')
-      .setLabel('Thai')
-      .setEmoji('🇹🇭')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('trans_tagalog')
-      .setLabel('Tagalog')
-      .setEmoji('🇵🇭')
-      .setStyle(ButtonStyle.Secondary)
-  );
-
-  await message.reply({
-    content: '🌐 *Translate:*',
-    components: [row],
-    allowedMentions: { repliedUser: false },
-  });
-});
-
-// Event 2: Handle Smart Ephemeral Translation
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
+  // 1. Handle Slash Command: /translator-toggle
+  if (interaction.isChatInputCommand() && interaction.commandName === 'translator-toggle') {
+    const userId = interaction.user.id;
 
-  const languageMap = {
-    trans_english: 'English',
-    trans_thai: 'Thai',
-    trans_tagalog: 'Tagalog',
-  };
-
-  const targetLang = languageMap[interaction.customId];
-  if (!targetLang) return;
-
-  // Private Ephemeral Reply
-  await interaction.deferReply({ flags: 64 });
-
-  // Fetch the original message
-  const targetMsg = interaction.message.reference 
-    ? await interaction.channel.messages.fetch(interaction.message.reference.messageId)
-    : null;
-
-  if (!targetMsg || !targetMsg.content) {
-    return interaction.editReply({ content: '❌ Could not retrieve message content.' });
+    if (optedOutUsers.has(userId)) {
+      optedOutUsers.delete(userId);
+      return interaction.reply({
+        content: '✅ **Translation Enabled:** Other users can now translate your messages.',
+        flags: 64, // Ephemeral
+      });
+    } else {
+      optedOutUsers.add(userId);
+      return interaction.reply({
+        content: '🔒 **Translation Disabled:** Other users can no longer translate your messages.',
+        flags: 64, // Ephemeral
+      });
+    }
   }
 
-  // Fetch the last 5 messages in the channel to give Gemini context
-  const recentMessages = await interaction.channel.messages.fetch({ limit: 5, before: targetMsg.id });
-  const contextHistory = recentMessages
-    .reverse()
-    .map(m => `${m.author.username}: ${m.content}`)
-    .join('\n');
+  // 2. Handle Right-Click Context Menu Translation
+  if (interaction.isMessageContextMenuCommand()) {
+    const commandLangMap = {
+      'Translate to English': 'English',
+      'Translate to Thai': 'Thai',
+      'Translate to Tagalog': 'Tagalog',
+    };
 
-  const translation = await translateWithContext(targetMsg.content, contextHistory, targetLang);
+    const targetLang = commandLangMap[interaction.commandName];
+    if (!targetLang) return;
 
-  if (translation) {
-    await interaction.editReply({
-      content: `🌐 **[${targetLang} Translation]:**\n${translation}`,
-    });
-  } else {
-    await interaction.editReply({
-      content: '❌ Translation failed.',
-    });
+    await interaction.deferReply({ flags: 64 });
+
+    const targetMsg = interaction.targetMessage;
+    if (!targetMsg || !targetMsg.content) {
+      return interaction.editReply({ content: '❌ Unable to read message content.' });
+    }
+
+    // CHECK OPT-OUT STATUS: Verify if author opted out
+    if (optedOutUsers.has(targetMsg.author.id)) {
+      return interaction.editReply({
+        content: `🔒 **Privacy Notice:** ${targetMsg.author.username} has opted out of message translations.`,
+      });
+    }
+
+    const translation = await translateMessage(targetMsg.content, targetLang);
+
+    if (translation) {
+      await interaction.editReply({
+        content: `🌐 **[${targetLang} Translation]:**\n${translation}`,
+      });
+    } else {
+      await interaction.editReply({
+        content: '❌ Translation failed. Please try again.',
+      });
+    }
   }
 });
 
