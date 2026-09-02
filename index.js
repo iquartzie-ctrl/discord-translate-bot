@@ -3,15 +3,13 @@ import { GoogleGenAI } from '@google/genai';
 import http from 'http';
 import 'dotenv/config';
 
-// Render Port Binding
+// Render Health Check Server
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.write("Discord Bot Active!");
+  res.write("Smart Translation Bot Active!");
   res.end();
-}).listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Health check server active on port ${PORT}`);
-});
+}).listen(PORT, '0.0.0.0');
 
 const client = new Client({
   intents: [
@@ -23,13 +21,35 @@ const client = new Client({
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-async function translateToLanguage(text, targetLang) {
+// Smart Translation with Context & Emoji Rules
+async function translateWithContext(targetMessage, recentHistory, targetLang) {
+  const systemInstruction = `
+You are an expert Discord AI Translator.
+Your job is to translate the target message into ${targetLang}.
+
+RULES:
+1. Preserve all custom Discord emojis (<:name:id>), standard emojis, URLs, and @mentions strictly as they are.
+2. Maintain markdown formatting like bold (**), italics (*), or code blocks (\`\`\`).
+3. If the user split their thoughts across multiple consecutive messages (shown in context history), combine them into one seamless, natural translation.
+4. Translate gaming/internet slang naturally to equivalent natural phrasing in ${targetLang}.
+5. Output ONLY the translated text without conversational filler or intros.
+`;
+
+  // Format context history for Gemini
+  const prompt = `
+[CHANNEL HISTORY FOR CONTEXT]:
+${recentHistory}
+
+[TARGET MESSAGE TO TRANSLATE]:
+"${targetMessage}"
+`;
+
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: text,
+      contents: prompt,
       config: {
-        systemInstruction: `Translate the text into ${targetLang}. Preserve all emojis, code blocks, and mentions. Return ONLY the translation.`,
+        systemInstruction: systemInstruction,
         temperature: 0.2,
       },
     });
@@ -45,7 +65,7 @@ client.once('clientReady', () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
 });
 
-// Event 1: Add interactive flag buttons under non-bot chat messages
+// Event 1: Add Translation Buttons
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.content) return;
 
@@ -74,7 +94,7 @@ client.on('messageCreate', async (message) => {
   });
 });
 
-// Event 2: Private (Ephemeral) Channel Translation on Button Click
+// Event 2: Handle Smart Ephemeral Translation
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -87,19 +107,26 @@ client.on('interactionCreate', async (interaction) => {
   const targetLang = languageMap[interaction.customId];
   if (!targetLang) return;
 
-  // flags: 64 makes this message EPHEMERAL (In-channel, visible ONLY to this specific user)
+  // Private Ephemeral Reply
   await interaction.deferReply({ flags: 64 });
 
-  // Fetch target message text
-  const originalMessage = interaction.message.reference 
+  // Fetch the original message
+  const targetMsg = interaction.message.reference 
     ? await interaction.channel.messages.fetch(interaction.message.reference.messageId)
     : null;
 
-  if (!originalMessage || !originalMessage.content) {
-    return interaction.editReply({ content: '❌ Could not read the target message.' });
+  if (!targetMsg || !targetMsg.content) {
+    return interaction.editReply({ content: '❌ Could not retrieve message content.' });
   }
 
-  const translation = await translateToLanguage(originalMessage.content, targetLang);
+  // Fetch the last 5 messages in the channel to give Gemini context
+  const recentMessages = await interaction.channel.messages.fetch({ limit: 5, before: targetMsg.id });
+  const contextHistory = recentMessages
+    .reverse()
+    .map(m => `${m.author.username}: ${m.content}`)
+    .join('\n');
+
+  const translation = await translateWithContext(targetMsg.content, contextHistory, targetLang);
 
   if (translation) {
     await interaction.editReply({
