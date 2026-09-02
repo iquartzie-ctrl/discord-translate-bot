@@ -3,12 +3,18 @@ import { GoogleGenAI } from '@google/genai';
 import http from 'http';
 import 'dotenv/config';
 
-// Health check for Render Free Web Service
-http.createServer((req, res) => {
-  res.write("Discord bot active!");
-  res.end();
-}).listen(process.env.PORT || 3000);
+// --- 1. RENDER WEB SERVICE HEALTH CHECK SERVER ---
+const PORT = process.env.PORT || 10000;
 
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.write("Discord Bot is Live & Listening!");
+  res.end();
+}).listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 Health check server bound to 0.0.0.0:${PORT}`);
+});
+
+// --- 2. DISCORD CLIENT CONFIGURATION ---
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -16,7 +22,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Message, Partials.Reaction, Partials.User], // Required to read reactions on older messages
+  partials: [Partials.Message, Partials.Reaction, Partials.User],
 });
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -35,13 +41,14 @@ async function translateToLanguage(text, targetLang) {
       model: 'gemini-3.6-flash',
       contents: text,
       config: {
-        systemInstruction: `Translate the text into ${targetLang}. Preserve emojis, code blocks, and mentions. Output ONLY the translation without extra text.`,
+        systemInstruction: `Translate the provided text into ${targetLang}. Preserve all emojis, code blocks, and user mentions. Return ONLY the translated text without extra conversational filler.`,
         temperature: 0.2,
       },
     });
+
     return response.text?.trim() || null;
   } catch (error) {
-    console.error('Gemini Error:', error);
+    console.error('Gemini API Error:', error);
     return null;
   }
 }
@@ -50,11 +57,10 @@ client.once('clientReady', () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
 });
 
-// Event: Triggers when someone reacts to a message with an emoji
+// --- 3. REACTION TRANSLATION EVENT ---
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
 
-  // Fetch partials if the message or reaction is cached/uncached
   if (reaction.partial) {
     try {
       await reaction.fetch();
@@ -65,7 +71,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
   }
 
   const targetLang = FLAG_LANGUAGES[reaction.emoji.name];
-  if (!targetLang) return; // Ignore irrelevant emoji reactions
+  if (!targetLang) return;
 
   const messageText = reaction.message.content;
   if (!messageText) return;
@@ -73,19 +79,12 @@ client.on('messageReactionAdd', async (reaction, user) => {
   const translation = await translateToLanguage(messageText, targetLang);
 
   if (translation) {
-    // Direct Message (DM) the user privately with their requested translation
     try {
       await user.send(`🌐 **[${targetLang} Translation]:**\n${translation}`);
     } catch (err) {
-      console.log(`Could not send DM to ${user.username}. They might have DMs disabled.`);
+      console.log(`Could not send DM to ${user.username}. User may have DMs closed.`);
     }
   }
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
-// Satisfies Render's free Web Service health check
-http.createServer((req, res) => {
-  res.write("Discord bot is active!");
-  res.end();
-}).listen(process.env.PORT || 3000);
