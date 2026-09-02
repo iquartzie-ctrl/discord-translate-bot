@@ -1,6 +1,13 @@
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
+import http from 'http';
 import 'dotenv/config';
+
+// Health check for Render Free Web Service
+http.createServer((req, res) => {
+  res.write("Discord bot active!");
+  res.end();
+}).listen(process.env.PORT || 3000);
 
 const client = new Client({
   intents: [
@@ -12,61 +19,101 @@ const client = new Client({
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const SYSTEM_PROMPT = `You are a translation bot for a Discord server. 
-Translate the provided message into ${process.env.TARGET_LANGUAGE || 'English'}. 
-Preserve all emojis, code blocks, and user mentions (@username). 
-Do not include explanations or conversational filler—output ONLY the translation. 
-If the text is already in ${process.env.TARGET_LANGUAGE || 'English'} or consists only of emojis/urls, return it unchanged.`;
-
-async function translateText(text) {
+// Dynamic translation function using Gemini 3.6 Flash
+async function translateToLanguage(text, targetLang) {
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
       contents: text,
       config: {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction: `Translate the provided text into ${targetLang}. Preserve emojis, code blocks, and @mentions. Output ONLY the translated text without conversational filler.`,
         temperature: 0.2,
       },
     });
 
     return response.text?.trim() || null;
   } catch (error) {
-    console.error('❌ Gemini API Error:', error);
+    console.error('Gemini API Error:', error);
     return null;
   }
 }
 
-// Fixed event name to clientReady (removes the Deprecation Warning)
 client.once('clientReady', () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log('📡 Waiting for messages in Discord...');
 });
 
+// Event 1: Add Translation Buttons to Messages
 client.on('messageCreate', async (message) => {
-  // Ignore messages from bots
-  if (message.author.bot) return;
+  if (message.author.bot || !message.content) return;
 
-  // Debug log: This WILL print in CMD if Discord sends the message to your code
-  console.log(`📩 [CMD Received]: "${message.content}" from ${message.author.username}`);
+  // Create Interactive Buttons
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('trans_english')
+      .setLabel('English')
+      .setEmoji('🇬🇧')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('trans_thai')
+      .setLabel('Thai')
+      .setEmoji('🇹🇭')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('trans_tagalog')
+      .setLabel('Tagalog')
+      .setEmoji('🇵🇭')
+      .setStyle(ButtonStyle.Secondary)
+  );
 
-  if (!message.content) {
-    console.log('⚠️ Message content is EMPTY. Check Message Content Intent in Discord Developer Portal.');
-    return;
+  // Send buttons under the user's message
+  await message.reply({
+    content: '🌐 *Translate this message:*',
+    components: [row],
+    allowedMentions: { repliedUser: false },
+  });
+});
+
+// Event 2: Handle Private (Ephemeral) Button Clicks
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  // Map custom IDs to target languages
+  const languageMap = {
+    trans_english: 'English',
+    trans_thai: 'Thai',
+    trans_tagalog: 'Tagalog',
+  };
+
+  const targetLang = languageMap[interaction.customId];
+  if (!targetLang) return;
+
+  // Defer reply ephemerally so Discord knows the bot is processing
+  await interaction.deferReply({ flags: 64 }); // 64 = Ephemeral (Only visible to clicker)
+
+  // Fetch the original message text being translated
+  const originalMessage = interaction.message.reference 
+    ? await interaction.channel.messages.fetch(interaction.message.reference.messageId)
+    : null;
+
+  if (!originalMessage || !originalMessage.content) {
+    return interaction.editReply({ content: '❌ Could not retrieve original message text.' });
   }
 
-  const translatedText = await translateText(message.content);
-  console.log(`🤖 [Gemini Result]: "${translatedText}"`);
+  const translation = await translateToLanguage(originalMessage.content, targetLang);
 
-  if (translatedText && translatedText.toLowerCase() !== message.content.toLowerCase()) {
-    await message.reply({
-      content: `🌐 **Translation:** ${translatedText}`,
-      allowedMentions: { repliedUser: false },
+  if (translation) {
+    await interaction.editReply({
+      content: `🌐 **[${targetLang} Translation]:**\n${translation}`,
     });
-    console.log('✅ Reply sent to Discord!');
+  } else {
+    await interaction.editReply({
+      content: '❌ Translation failed. Please try again.',
+    });
   }
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
 
 import http from 'http';
 
