@@ -55,11 +55,11 @@ client.once('clientReady', async () => {
   }
 });
 
-// Gemini Translation
+// Change 'gemini-3.6-flash' to 'gemini-3.1-flash-lite'
 async function translateToLanguage(text, targetLang) {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.1-flash-lite', // Updated model
       contents: text,
       config: {
         systemInstruction: `Translate the text into ${targetLang}. Preserve all emojis, mentions, and code blocks. Output ONLY the translated text.`,
